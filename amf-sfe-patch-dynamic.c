@@ -153,17 +153,6 @@ static int pe_parse(PEFile *pe, uint8_t *data, size_t size) {
     return 0;
 }
 
-/* Convert RVA to file offset */
-static uint32_t rva_to_file(PEFile *pe, uint32_t rva) {
-    for (uint16_t i = 0; i < pe->num_sections; i++) {
-        SectionHeader *s = &pe->sections[i];
-        if (rva >= s->VirtualAddress && rva < s->VirtualAddress + s->SizeOfRawData) {
-            return s->PointerToRawData + (rva - s->VirtualAddress);
-        }
-    }
-    return 0;
-}
-
 /* Convert file offset to RVA */
 static uint32_t file_to_rva(PEFile *pe, uint32_t file_off) {
     for (uint16_t i = 0; i < pe->num_sections; i++) {
@@ -359,7 +348,7 @@ static const uint16_t resolution_pat[] = {
     0x3D, 0x00, 0x90, 0x7E, 0x00,    /* CMP EAX, 0x7E9000 */
     0x73, WILD                        /* JAE +disp8 */
 };
-static const uint8_t resolution_fix[] = { 0xEB }; /* Change JAE to JMP */
+/* resolution_fix not needed — we patch the byte directly in the main loop */
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -886,11 +875,13 @@ int main(int argc, char **argv) {
     size_t dll_size;
     uint8_t *dll_data = read_file(dll_path, &dll_size);
     if (!dll_data) { fprintf(stderr, "Error: Failed to read %s\n", dll_path); return 1; }
-    printf("Loaded %s (%zu bytes)\n\n", dll_path, dll_size);
+    printf("Loaded %s (%zu bytes)\n", dll_path, dll_size);
+    fflush(stdout);
 
     PEFile pe;
     if (pe_parse(&pe, dll_data, dll_size) != 0) {
-        fprintf(stderr, "Error: Failed to parse PE structure\n");
+        fprintf(stderr, "Error: Not a valid 64-bit PE file.\n");
+        fprintf(stderr, "Make sure you're pointing at amfrtdrv64.dll, not a shortcut or other file.\n");
         free(dll_data); return 1;
     }
     printf("PE parsed: .text at file 0x%X (RVA 0x%X), size 0x%X\n",
@@ -1035,10 +1026,12 @@ int main(int argc, char **argv) {
         if (any_found)
             printf("This DLL appears patchable. Use --replace to apply.\n");
         else
-            printf("WARNING: No patchable patterns found.\n");
+            printf("No patchable patterns found. This DLL may already be patched,\n"
+                   "or it uses an unrecognized structure. Run --analyze on an\n"
+                   "unpatched DLL or open an issue with this output.\n");
     } else if (mode == MODE_PATCH) {
         if (total_patched == 0) {
-            printf("Nothing to patch.\n");
+            printf("Nothing to patch (already patched?).\n");
         } else {
             printf("Writing patched DLL to %s...\n", output_path);
             if (write_file(output_path, dll_data, dll_size) != 0) {
@@ -1048,7 +1041,7 @@ int main(int argc, char **argv) {
         }
     } else if (mode == MODE_REPLACE) {
         if (total_patched == 0) {
-            printf("Nothing to patch.\n");
+            printf("Nothing to patch (already patched?).\n");
         } else {
             char bak_path[4096];
             snprintf(bak_path, sizeof(bak_path), "%s.bak", dll_path);
