@@ -148,6 +148,23 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
 }
 
 static int write_file(const char *path, const uint8_t *data, size_t size) {
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "%s: CreateFile failed (GetLastError=%lu)\n", path, GetLastError());
+        return -1;
+    }
+    DWORD written;
+    if (!WriteFile(hFile, data, (DWORD)size, &written, NULL) || written != (DWORD)size) {
+        fprintf(stderr, "%s: WriteFile failed (GetLastError=%lu, wrote %lu/%zu)\n",
+                path, GetLastError(), (unsigned long)written, size);
+        CloseHandle(hFile);
+        return -1;
+    }
+    CloseHandle(hFile);
+    return 0;
+#else
     FILE *f = fopen(path, "wb");
     if (!f) { perror(path); return -1; }
     if (fwrite(data, 1, size, f) != size) {
@@ -157,6 +174,7 @@ static int write_file(const char *path, const uint8_t *data, size_t size) {
     }
     fclose(f);
     return 0;
+#endif
 }
 
 static int copy_file(const char *src, const char *dst) {
@@ -192,6 +210,124 @@ static int pattern_scan(const uint8_t *data, size_t data_len,
     }
     return count;
 }
+
+/* ── Debug helpers ────────────────────────────────────────────────────── */
+
+#ifdef _WIN32
+static int is_elevated(void) {
+    BOOL elevated = FALSE;
+    HANDLE token = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION elev;
+        DWORD size;
+        if (GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &size))
+            elevated = elev.TokenIsElevated;
+        CloseHandle(token);
+    }
+    return elevated;
+}
+
+static void debug_file_info(const char *label, const char *path) {
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        DWORD err = GetLastError();
+        printf("  [debug] %s: does not exist or inaccessible (GetLastError=%lu)\n", label, err);
+        return;
+    }
+
+    printf("  [debug] %s: exists, attrs=0x%lX", label, (unsigned long)attrs);
+    if (attrs & FILE_ATTRIBUTE_READONLY)  printf(" READONLY");
+    if (attrs & FILE_ATTRIBUTE_SYSTEM)    printf(" SYSTEM");
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) printf(" DIR");
+    printf("\n");
+
+    /* Try opening for write to test actual access */
+    HANDLE hFile = CreateFileA(path,
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) ? FILE_LIST_DIRECTORY : GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : 0,
+        NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        printf("  [debug] %s: write access DENIED (GetLastError=%lu", label, err);
+        if (err == 5)    printf(" ACCESS_DENIED");
+        if (err == 32)   printf(" SHARING_VIOLATION");
+        if (err == 1314) printf(" PRIVILEGE_NOT_HELD");
+        printf(")\n");
+    } else {
+        printf("  [debug] %s: write access OK\n", label);
+        CloseHandle(hFile);
+    }
+}
+#endif
+
+/* ── Take ownership of a file (for DriverStore/TrustedInstaller) ────── */
+
+#ifdef _WIN32
+static int take_ownership(const char *path) {
+    char cmd[4096];
+    int rc;
+
+    printf("  [debug] takeown target: %s\n", path);
+
+    /* takeown /f "<path>" /a — gives Administrators ownership */
+    snprintf(cmd, sizeof(cmd), "takeown /f \"%s\" /a >nul 2>&1", path);
+    rc = system(cmd);
+    if (rc != 0) {
+        printf("  [debug] takeown exit code: %d\n", rc);
+        fprintf(stderr, "Warning: takeown failed for %s\n", path);
+    } else {
+        printf("  [debug] takeown succeeded\n");
+    }
+
+    /* icacls "<path>" /grant Administrators:F — full control */
+    snprintf(cmd, sizeof(cmd), "icacls \"%s\" /grant Administrators:F >nul 2>&1", path);
+    rc = system(cmd);
+    if (rc != 0) {
+        printf("  [debug] icacls exit code: %d\n", rc);
+        fprintf(stderr, "Warning: icacls failed for %s\n", path);
+    } else {
+        printf("  [debug] icacls succeeded\n");
+    }
+
+    return 0;
+}
+
+/* Take ownership of a file and its parent directory */
+static int take_ownership_for_write(const char *file_path) {
+    printf("\n  [debug] --- Ownership debug info ---\n");
+    printf("  [debug] Elevated (admin): %s\n", is_elevated() ? "YES" : "NO");
+
+    /* Check access BEFORE taking ownership */
+    printf("  [debug] Before takeown:\n");
+    debug_file_info("DLL file", file_path);
+
+    char dir_path[MAX_PATH];
+    strncpy(dir_path, file_path, MAX_PATH - 1);
+    dir_path[MAX_PATH - 1] = '\0';
+    char *last_sep = strrchr(dir_path, '\\');
+    if (!last_sep) last_sep = strrchr(dir_path, '/');
+    if (last_sep) *last_sep = '\0';
+
+    debug_file_info("Parent dir", dir_path);
+
+    /* Take ownership of the file itself */
+    printf("\n  [debug] Taking ownership of DLL...\n");
+    take_ownership(file_path);
+
+    /* Take ownership of parent directory for creating .bak */
+    printf("  [debug] Taking ownership of parent dir...\n");
+    take_ownership(dir_path);
+
+    /* Check access AFTER taking ownership */
+    printf("\n  [debug] After takeown:\n");
+    debug_file_info("DLL file", file_path);
+    debug_file_info("Parent dir", dir_path);
+    printf("  [debug] --- End ownership debug ---\n\n");
+
+    return 0;
+}
+#endif
 
 /* ── Auto-find amfrtdrv64.dll on Windows ─────────────────────────────── */
 
@@ -445,19 +581,46 @@ int main(int argc, char **argv) {
         if (total_patched == 0) {
             printf("Nothing to patch (already patched?).\n");
         } else {
+            /* Take ownership if needed (DriverStore is owned by TrustedInstaller) */
+#ifdef _WIN32
+            printf("Taking ownership of file and directory...\n");
+            take_ownership_for_write(dll_path);
+#endif
+
             /* Create backup */
             char bak_path[4096];
             snprintf(bak_path, sizeof(bak_path), "%s.bak", dll_path);
-            printf("Creating backup: %s\n", bak_path);
+            printf("Creating backup: %s -> %s\n", dll_path, bak_path);
             if (copy_file(dll_path, bak_path) != 0) {
-                fprintf(stderr, "Error: Failed to create backup. Aborting.\n");
+#ifdef _WIN32
+                DWORD err = GetLastError();
+                fprintf(stderr, "Error: Failed to create backup (GetLastError=%lu", err);
+                if (err == 5)  fprintf(stderr, " ACCESS_DENIED");
+                if (err == 32) fprintf(stderr, " SHARING_VIOLATION");
+                if (err == 3)  fprintf(stderr, " PATH_NOT_FOUND");
+                fprintf(stderr, ")\n");
+                fprintf(stderr, "  [debug] Backup src: %s\n", dll_path);
+                fprintf(stderr, "  [debug] Backup dst: %s\n", bak_path);
+#else
+                fprintf(stderr, "Error: Failed to create backup.\n");
+#endif
+                fprintf(stderr, "Aborting — original file was NOT modified.\n");
                 free(dll_data);
                 return 1;
             }
+            printf("  [debug] Backup created successfully (%zu bytes)\n", dll_size);
 
             printf("Writing patched DLL to %s...\n", dll_path);
             if (write_file(dll_path, dll_data, dll_size) != 0) {
+#ifdef _WIN32
+                DWORD err = GetLastError();
+                fprintf(stderr, "Error: Failed to write patched file (GetLastError=%lu", err);
+                if (err == 5)  fprintf(stderr, " ACCESS_DENIED");
+                if (err == 32) fprintf(stderr, " SHARING_VIOLATION");
+                fprintf(stderr, ")\n");
+#else
                 fprintf(stderr, "Error: Failed to write patched file.\n");
+#endif
                 fprintf(stderr, "Original backup at: %s\n", bak_path);
                 free(dll_data);
                 return 1;
