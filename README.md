@@ -64,11 +64,23 @@ To revert: restore the `.bak` file or reinstall your AMD drivers.
 
 - **Requires:** AMD GPU with dual VCN hardware (e.g., Radeon RX 7000 series, Radeon 8060S / Strix Halo)
 - **Tested on:** Radeon 8060S (Strix Halo, device ID 0x1586) at 1440p
-- **Codec results:**
-  - AV1 + HDR: **works perfectly** — no artifacts, good quality
-  - HEVC + SDR: **works well** — clean image
-  - HEVC + HDR: **broken** — fuzzy artifacts at any bitrate, appears to be inherent to AMD's HEVC SFE with 10-bit
-- **Recommendation:** Use **AV1 + HDR** with SFE
+
+### Codec results
+
+| Codec | HDR | Result |
+|-------|-----|--------|
+| AV1 | Yes | **Works perfectly** — no artifacts, good quality |
+| HEVC | No (SDR) | **Works well** — clean image |
+| HEVC | Yes | **Broken** — fuzzy artifacts at any bitrate, inherent to AMD's HEVC SFE with 10-bit |
+
+### Important: your mileage will vary
+
+**Strix Halo is currently the only AMD chip with dual AV1 encoders.** Other dual-VCN GPUs (RX 7900 XT/XTX, etc.) have dual HEVC encoders but only a single AV1 encoder. This means:
+
+- **Strix Halo:** Use AV1 + HDR with SFE. Best experience.
+- **Everything else (RX 7000 series, etc.):** SFE is limited to HEVC, which means **SDR only** — HEVC + HDR produces artifacts with split frame encoding. Still a latency win, but no HDR.
+
+If you're not on Strix Halo, set your streaming client to HEVC + SDR before enabling SFE.
 
 ## Driver version support
 
