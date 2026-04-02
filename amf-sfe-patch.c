@@ -451,7 +451,8 @@ static const char *auto_find_dll(void) {
         printf("  [debug] If patching doesn't take effect, try specifying the other path manually.\n");
     }
 
-    return NULL;
+    if (total_found == 0) return NULL;
+    return found_path;
 }
 #endif
 
