@@ -2,7 +2,7 @@
 
 Force-enable split frame encoding for AMD GPUs in [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), and [Vibepollo](https://github.com/ClassicOldSong/Apollo) game streaming.
 
-NVIDIA's NVENC has had a "split encode" toggle that users can force-enable at any resolution -it just works. AMD GPUs with dual VCN (Video Core Next) encoder hardware have the same capability, but AMD locks it behind a 4K+ resolution gate with no user-facing option to override it. **This tool removes that restriction** so you can use split frame encoding at 1440p, 1080p, or whatever resolution you stream at.
+NVIDIA initially had the same 4K+ resolution gate on split encoding, but opened it up in Video Codec SDK 12.1 (May 2023) with a force-enable API. Streaming servers like [Vibepollo](https://github.com/Nonary/Vibepollo) now expose this as a simple toggle for NVENC users. AMD has the same dual-encoder hardware capability on supported GPUs, but still locks SFE behind a 4K resolution gate with no user-facing option or API to override it. **This tool removes that restriction** so you can use split frame encoding at 1440p, 1080p, or whatever resolution you stream at.
 
 > **Important:** This only works on AMD GPUs that have **two VCN encoder instances** in hardware. If your GPU has a single VCN instance, there is no second encoder to split across. Check the [compatibility table](#supported-hardware) below before using this tool.
 
@@ -161,7 +161,11 @@ Or just run `build.bat` from a Visual Studio Developer Command Prompt or MinGW s
 
 ## Disclaimer
 
-This modifies AMD driver binaries. Use at your own risk. The file patcher creates `.bak` backups automatically. If something goes wrong, restore the backup or reinstall your AMD drivers.
+This modifies `amfrtdrv64.dll`, which is a system-wide AMD driver binary. The patch is intended for game streaming with Sunshine, Apollo, and Vibepollo, but **any application that uses AMD's hardware encoder will be affected.** This includes OBS, Discord, Xbox Game Bar, Teams, and anything else that encodes video through AMF. We can't predict how other software will behave with split frame encoding force-enabled at lower resolutions - it may work fine, or it may cause unexpected artifacts or issues.
+
+If you run into problems with other software after patching, restore the `.bak` backup or reinstall your AMD drivers to revert.
+
+The file patcher creates `.bak` backups automatically. Use at your own risk.
 
 ## License
 
