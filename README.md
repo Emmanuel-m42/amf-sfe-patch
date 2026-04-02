@@ -2,7 +2,7 @@
 
 Force-enable split frame encoding for AMD GPUs in [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), and [Vibepollo](https://github.com/ClassicOldSong/Apollo) game streaming.
 
-NVIDIA initially had the same 4K+ resolution gate on split encoding, but opened it up in Video Codec SDK 12.1 (May 2023) with a force-enable API. Streaming servers like [Vibepollo](https://github.com/Nonary/Vibepollo) now expose this as a simple toggle for NVENC users. AMD has the same dual-encoder hardware capability on supported GPUs, but still locks SFE behind a 4K resolution gate with no user-facing option or API to override it. **This tool removes that restriction** so you can use split frame encoding at 1440p, 1080p, or whatever resolution you stream at.
+NVIDIA initially had the same 4K+ resolution gate on split encoding, but opened it up in Video Codec SDK 12.1 (May 2023) with a force-enable API. Streaming servers like [Vibepollo](https://github.com/Nonary/Vibepollo) now expose this as a simple toggle for NVENC users. AMD has the same dual-encoder hardware capability on supported GPUs, but still locks SFE behind a 4K resolution gate with no user-facing option or API to override it. **This tool removes that restriction** so you can use split frame encoding at 1440p, 1080p, or whatever resolution you stream at. Ideally AMD adds a force-enable flag to AMF like NVIDIA did, making this tool unnecessary - but until then, this is the only way to get SFE working at sub-4K resolutions.
 
 > **Important:** This only works on AMD GPUs that have **two VCN encoder instances** in hardware. If your GPU has a single VCN instance, there is no second encoder to split across. Check the [compatibility table](#supported-hardware) below before using this tool.
 
@@ -58,6 +58,8 @@ The patcher removes the following restrictions from `amfrtdrv64.dll` (AMD's enco
 - **Device whitelist bypass** - forces the SFE enable flag on all devices
 - **SFE disable writes** - NOPs code paths that turn SFE off based on encoder settings
 
+Unlike Vibepollo's NVENC implementation where split encode is a toggle in the UI, this is a **driver-level modification**. There is no on/off switch - once the DLL is patched, SFE is enabled for every encode session on the system until you restore the original DLL.
+
 ## Three tools
 
 ### `amf-sfe-patch-dynamic.exe` - Dynamic patcher (recommended)
@@ -102,6 +104,20 @@ amf-sfe-launch.exe "C:\path\to\app.exe"   # launch and patch
 6. Restart your streaming server (Sunshine/Apollo/Vibepollo)
 
 To revert: restore the `.bak` file or reinstall your AMD drivers.
+
+## How to verify it's working
+
+After patching and restarting your streaming server, you want to confirm that both VCN instances are actually encoding.
+
+1. **Disable Hardware Accelerated GPU Scheduling (HAGS)** - HAGS can make a dual encode session appear as a single one in monitoring tools. Go to Settings > System > Display > Graphics > Change default graphics settings and turn off "Hardware-accelerated GPU scheduling." Reboot after changing this.
+
+2. **Open Task Manager** - go to the Performance tab and look at your GPU.
+
+3. **Start a streaming session** from your Moonlight client.
+
+4. **Check Video Encode activity** - you should see load on both "Video Codec 0" and "Video Codec 1" (or "Video Encode 0" / "Video Encode 1" depending on your driver version). If only one codec engine shows activity, SFE is not active.
+
+If both engines show encode load, split frame encoding is working. You can re-enable HAGS afterward if you prefer - the patch still works either way, HAGS just affects how Task Manager reports the activity.
 
 ## Compatibility
 
@@ -161,11 +177,15 @@ Or just run `build.bat` from a Visual Studio Developer Command Prompt or MinGW s
 
 ## Disclaimer
 
-This modifies `amfrtdrv64.dll`, which is a system-wide AMD driver binary. The patch is intended for game streaming with Sunshine, Apollo, and Vibepollo, but **any application that uses AMD's hardware encoder will be affected.** This includes OBS, Discord, Xbox Game Bar, Teams, and anything else that encodes video through AMF. We can't predict how other software will behave with split frame encoding force-enabled at lower resolutions - it may work fine, or it may cause unexpected artifacts or issues.
+This is a **driver modification** - it patches `amfrtdrv64.dll`, which is a system-wide AMD binary. Use with caution.
 
-If you run into problems with other software after patching, restore the `.bak` backup or reinstall your AMD drivers to revert.
+The patch only touches the video encoder DLL. It does not affect your display output, GPU compute, or anything outside of hardware video encoding. That said, it is still a driver mod, so:
 
-The file patcher creates `.bak` backups automatically. Use at your own risk.
+- **Back up before patching.** The file patcher creates `.bak` backups automatically, but make sure you know where they are.
+- **Any application that uses AMD's hardware encoder will be affected.** This includes OBS, Discord, Xbox Game Bar, Teams, and anything else that encodes video through AMF. We can't predict how other software will behave with SFE force-enabled at lower resolutions.
+- **Know how to recover.** If something goes wrong:
+  1. Rename the `.bak` file back to `amfrtdrv64.dll` (you may need to do this from Safe Mode or a recovery environment if the file is locked)
+  2. Or just reinstall your AMD drivers - this will replace the patched DLL with a fresh copy
 
 ## License
 
