@@ -126,6 +126,44 @@ static void print_hex(const uint8_t *data, size_t len) {
 }
 
 static uint8_t *read_file(const char *path, size_t *out_size) {
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        fprintf(stderr, "%s: cannot open for reading (GetLastError=%lu", path, err);
+        if (err == 2)  fprintf(stderr, " FILE_NOT_FOUND");
+        if (err == 3)  fprintf(stderr, " PATH_NOT_FOUND");
+        if (err == 5)  fprintf(stderr, " ACCESS_DENIED");
+        if (err == 32) fprintf(stderr, " SHARING_VIOLATION — is AMD software or Apollo still running?");
+        fprintf(stderr, ")\n");
+        return NULL;
+    }
+    LARGE_INTEGER li;
+    if (!GetFileSizeEx(hFile, &li) || li.QuadPart <= 0) {
+        fprintf(stderr, "%s: cannot get file size (GetLastError=%lu)\n", path, GetLastError());
+        CloseHandle(hFile);
+        return NULL;
+    }
+    size_t sz = (size_t)li.QuadPart;
+    uint8_t *buf = (uint8_t *)malloc(sz);
+    if (!buf) {
+        fprintf(stderr, "%s: malloc failed (%zu bytes)\n", path, sz);
+        CloseHandle(hFile);
+        return NULL;
+    }
+    DWORD bytesRead;
+    if (!ReadFile(hFile, buf, (DWORD)sz, &bytesRead, NULL) || bytesRead != (DWORD)sz) {
+        fprintf(stderr, "%s: ReadFile failed (GetLastError=%lu, read %lu/%zu)\n",
+                path, GetLastError(), (unsigned long)bytesRead, sz);
+        free(buf);
+        CloseHandle(hFile);
+        return NULL;
+    }
+    CloseHandle(hFile);
+    *out_size = sz;
+    return buf;
+#else
     FILE *f = fopen(path, "rb");
     if (!f) { perror(path); return NULL; }
 
@@ -145,6 +183,7 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
     fclose(f);
     *out_size = (size_t)sz;
     return buf;
+#endif
 }
 
 static int write_file(const char *path, const uint8_t *data, size_t size) {
@@ -334,32 +373,22 @@ static int take_ownership_for_write(const char *file_path) {
 #ifdef _WIN32
 static const char *auto_find_dll(void) {
     static char found_path[MAX_PATH];
+    int total_found = 0;
+
+    printf("  [debug] Searching for amfrtdrv64.dll...\n");
 
     /* Try System32 first */
     const char *sys32 = "C:\\Windows\\System32\\amfrtdrv64.dll";
     if (GetFileAttributesA(sys32) != INVALID_FILE_ATTRIBUTES) {
+        printf("  [debug] Found in System32: %s\n", sys32);
         strncpy(found_path, sys32, MAX_PATH - 1);
-        return found_path;
+        total_found++;
+        /* Don't return yet — keep searching to log all copies */
     }
 
     /* Search DriverStore */
     WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(
-        "C:\\Windows\\System32\\DriverStore\\FileRepository\\*amd*\\*\\amfrtdrv64.dll",
-        &fd);
-
-    if (hFind == INVALID_HANDLE_VALUE) {
-        /* Broader search */
-        hFind = FindFirstFileA(
-            "C:\\Windows\\System32\\DriverStore\\FileRepository\\u*.inf_amd64_*\\*\\amfrtdrv64.dll",
-            &fd);
-    }
-
-    if (hFind != INVALID_HANDLE_VALUE) {
-        /* FindFirstFile with wildcards in middle dirs doesn't really work this way.
-           Use a manual recursive search instead. */
-        FindClose(hFind);
-    }
+    HANDLE hFind;
 
     /* Manual search of DriverStore subdirs */
     {
@@ -368,39 +397,58 @@ static const char *auto_find_dll(void) {
         snprintf(search_pattern, sizeof(search_pattern), "%s\\*", base);
 
         hFind = FindFirstFileA(search_pattern, &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return NULL;
-
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-            if (fd.cFileName[0] == '.') continue;
-
-            /* Search one level deeper */
-            char subdir[MAX_PATH];
-            snprintf(subdir, sizeof(subdir), "%s\\%s\\*", base, fd.cFileName);
-
-            WIN32_FIND_DATAA fd2;
-            HANDLE hFind2 = FindFirstFileA(subdir, &fd2);
-            if (hFind2 == INVALID_HANDLE_VALUE) continue;
-
+        if (hFind != INVALID_HANDLE_VALUE) {
             do {
-                if (!(fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-                if (fd2.cFileName[0] == '.') continue;
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                if (fd.cFileName[0] == '.') continue;
 
-                char candidate[MAX_PATH];
-                snprintf(candidate, sizeof(candidate), "%s\\%s\\%s\\amfrtdrv64.dll",
-                         base, fd.cFileName, fd2.cFileName);
+                /* Search one level deeper */
+                char subdir[MAX_PATH];
+                snprintf(subdir, sizeof(subdir), "%s\\%s\\*", base, fd.cFileName);
 
-                if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES) {
-                    FindClose(hFind2);
-                    FindClose(hFind);
-                    strncpy(found_path, candidate, MAX_PATH - 1);
-                    return found_path;
-                }
-            } while (FindNextFileA(hFind2, &fd2));
-            FindClose(hFind2);
+                WIN32_FIND_DATAA fd2;
+                HANDLE hFind2 = FindFirstFileA(subdir, &fd2);
+                if (hFind2 == INVALID_HANDLE_VALUE) continue;
 
-        } while (FindNextFileA(hFind, &fd));
-        FindClose(hFind);
+                do {
+                    if (!(fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                    if (fd2.cFileName[0] == '.') continue;
+
+                    char candidate[MAX_PATH];
+                    snprintf(candidate, sizeof(candidate), "%s\\%s\\%s\\amfrtdrv64.dll",
+                             base, fd.cFileName, fd2.cFileName);
+
+                    if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES) {
+                        /* Get file size for identification */
+                        WIN32_FIND_DATAA finfo;
+                        HANDLE hInfo = FindFirstFileA(candidate, &finfo);
+                        DWORD file_size = 0;
+                        if (hInfo != INVALID_HANDLE_VALUE) {
+                            file_size = finfo.nFileSizeLow;
+                            FindClose(hInfo);
+                        }
+
+                        total_found++;
+                        printf("  [debug] Found DLL #%d: %s (%lu bytes)\n",
+                               total_found, candidate, (unsigned long)file_size);
+
+                        /* Use the first DriverStore match if we didn't find one in System32 */
+                        if (found_path[0] == '\0' || total_found == 1) {
+                            strncpy(found_path, candidate, MAX_PATH - 1);
+                        }
+                    }
+                } while (FindNextFileA(hFind2, &fd2));
+                FindClose(hFind2);
+
+            } while (FindNextFileA(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
+
+    printf("  [debug] Total DLL copies found: %d\n", total_found);
+    if (total_found > 1) {
+        printf("  [debug] NOTE: Multiple copies found! Using: %s\n", found_path);
+        printf("  [debug] If patching doesn't take effect, try specifying the other path manually.\n");
     }
 
     return NULL;
@@ -480,6 +528,10 @@ int main(int argc, char **argv) {
     uint8_t *dll_data = read_file(dll_path, &dll_size);
     if (!dll_data) {
         fprintf(stderr, "Error: Failed to read %s\n", dll_path);
+        fprintf(stderr, "\n========================================\n");
+        fprintf(stderr, "If reporting this error, please share ALL\n");
+        fprintf(stderr, "output above (scroll up to the top).\n");
+        fprintf(stderr, "========================================\n");
         return 1;
     }
     printf("Loaded %s (%zu bytes)\n\n", dll_path, dll_size);
@@ -558,6 +610,10 @@ int main(int argc, char **argv) {
     if (!any_hevc_matched) {
         fprintf(stderr, "Error: No known HEVC SFE pattern matched this DLL.\n");
         fprintf(stderr, "This driver version may need a new pattern. File size: %zu bytes\n", dll_size);
+        fprintf(stderr, "\n========================================\n");
+        fprintf(stderr, "If reporting this error, please share ALL\n");
+        fprintf(stderr, "output above (scroll up to the top).\n");
+        fprintf(stderr, "========================================\n");
         free(dll_data);
         return 1;
     }
@@ -601,10 +657,16 @@ int main(int argc, char **argv) {
                 fprintf(stderr, ")\n");
                 fprintf(stderr, "  [debug] Backup src: %s\n", dll_path);
                 fprintf(stderr, "  [debug] Backup dst: %s\n", bak_path);
+                if (err == 32)
+                    fprintf(stderr, "  Hint: A process has the DLL locked. Close AMD Software / Apollo / Sunshine and try again.\n");
 #else
                 fprintf(stderr, "Error: Failed to create backup.\n");
 #endif
                 fprintf(stderr, "Aborting — original file was NOT modified.\n");
+                fprintf(stderr, "\n========================================\n");
+                fprintf(stderr, "If reporting this error, please share ALL\n");
+                fprintf(stderr, "output above (scroll up to the top).\n");
+                fprintf(stderr, "========================================\n");
                 free(dll_data);
                 return 1;
             }
@@ -618,10 +680,16 @@ int main(int argc, char **argv) {
                 if (err == 5)  fprintf(stderr, " ACCESS_DENIED");
                 if (err == 32) fprintf(stderr, " SHARING_VIOLATION");
                 fprintf(stderr, ")\n");
+                if (err == 32)
+                    fprintf(stderr, "  Hint: A process has the DLL locked. Close AMD Software / Apollo / Sunshine and try again.\n");
 #else
                 fprintf(stderr, "Error: Failed to write patched file.\n");
 #endif
                 fprintf(stderr, "Original backup at: %s\n", bak_path);
+                fprintf(stderr, "\n========================================\n");
+                fprintf(stderr, "If reporting this error, please share ALL\n");
+                fprintf(stderr, "output above (scroll up to the top).\n");
+                fprintf(stderr, "========================================\n");
                 free(dll_data);
                 return 1;
             }
