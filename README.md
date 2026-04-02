@@ -1,23 +1,66 @@
 # AMF Split Frame Encode (SFE) Patcher
 
-Force-enable AMD's dual VCN split frame encoding at any resolution. AMD locks SFE behind a 4K+ resolution gate and a device whitelist — this tool removes those restrictions so you can use dual VCN at 1440p (or whatever you want).
+Force-enable split frame encoding for AMD GPUs in [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), and [Vibepollo](https://github.com/ClassicOldSong/Apollo) game streaming.
 
-## What is SFE?
+NVIDIA's NVENC has had a "split encode" toggle that users can force-enable at any resolution -it just works. AMD GPUs with dual VCN (Video Core Next) encoder hardware have the same capability, but AMD locks it behind a 4K+ resolution gate with no user-facing option to override it. **This tool removes that restriction** so you can use split frame encoding at 1440p, 1080p, or whatever resolution you stream at.
 
-Split Frame Encoding splits each video frame across both VCN (Video Core Next) encoder instances on supported AMD GPUs, cutting encode latency roughly in half. AMD artificially restricts this to 4K+ resolutions, but the hardware works fine at lower resolutions.
+> **Important:** This only works on AMD GPUs that have **two VCN encoder instances** in hardware. If your GPU has a single VCN instance, there is no second encoder to split across. Check the [compatibility table](#supported-hardware) below before using this tool.
+
+## Why this matters
+
+Game streaming is a latency race. At 120 fps, you have **8.33 ms per frame** -that's your entire budget to capture, encode, transmit, decode, and display. At 240 fps, it's just 4.17 ms. Every millisecond the encoder spends on a frame is a millisecond added to the glass-to-glass latency you feel on the controller.
+
+A single VCN instance encoding a 1440p frame might take 4–6 ms. Split that across two VCN instances and you're looking at 2–3 ms -shaving 2–3 ms off every single frame. That doesn't sound like much until you realize it's **25–35% of your entire frame budget at 120 fps**. Over a network where you're already fighting transport jitter and decode time, that headroom is the difference between a stream that feels local and one that feels sluggish.
+
+NVIDIA users have had this advantage for a while. If you have an AMD GPU with dual VCN hardware, there's no reason you shouldn't be able to use it the same way.
+
+## Supported hardware
+
+Split frame encoding requires **two VCN instances**. Not all AMD GPUs have this -many recent GPUs, including all of RDNA 4, only have one.
+
+### Dual VCN GPUs (SFE works)
+
+| GPU | Chip | VCN | HEVC SFE | AV1 SFE | Notes |
+|-----|------|-----|----------|---------|-------|
+| **Ryzen AI Max (Strix Halo)** | Strix Halo | 5.0 x2 | Yes | **Yes** | Only AMD chip with dual AV1 encode. Best SFE experience. |
+| **RX 7900 XTX / 7900 XT / 7900 GRE** | Navi 31 | 4.0 x2 | Yes | No -1 AV1 encoder | HEVC SFE only. Use SDR (HEVC + HDR has artifacts). |
+| **RX 7800 XT / 7700 XT** | Navi 32 | 4.0 x2 | Yes | No -1 AV1 encoder | HEVC SFE only. Use SDR. |
+| **RX 6900 XT / 6800 XT / 6800** | Navi 21 | 3.0 x2 | Yes | No AV1 encode | HEVC SFE only. No AV1 at all on VCN 3.0. |
+
+### Single VCN GPUs (SFE not possible)
+
+| GPU | Chip | VCN | Why not |
+|-----|------|-----|---------|
+| **RX 9070 XT / 9070** | Navi 48 | 5.0 x1 | RDNA 4 has only 1 VCN instance |
+| **RX 7600 XT / 7600** | Navi 33 | 4.0 x1 | Single VCN |
+| **RX 6700 XT / 6750 XT** | Navi 22 | 3.0 x1 | Single VCN |
+| **RX 6600 XT / 6600** | Navi 23 | 3.0 x1 | Single VCN |
+| **Ryzen AI 9 HX (Strix Point)** | Strix Point | 4.0 x1 | Single VCN |
+| **Ryzen 8040 / 7040 APUs** | Hawk Point / Phoenix | 4.0 x1 | Single VCN |
+
+### Codec recommendations
+
+| Your GPU | Codec | HDR | SFE Result |
+|----------|-------|-----|------------|
+| Strix Halo | AV1 | Yes | **Best** -no artifacts, full quality |
+| Strix Halo | HEVC | No (SDR) | Good -clean image |
+| Strix Halo | HEVC | Yes | **Broken** -artifacts at any bitrate |
+| Navi 31/32 (RX 7000) | HEVC | No (SDR) | Good -only SFE option |
+| Navi 31/32 (RX 7000) | HEVC | Yes | **Broken** -artifacts at any bitrate |
+| Navi 21 (RX 6000) | HEVC | No (SDR) | Good -only SFE option |
 
 ## What this does
 
 The patcher removes the following restrictions from `amfrtdrv64.dll` (AMD's encoder driver):
 
-- **Resolution gate** — removes the 4K minimum (`width * height >= 0x7E9000`) check
-- **Heuristic bypass** — removes the check that decides SFE "isn't needed"
-- **Device whitelist bypass** — forces the SFE enable flag on all devices
-- **SFE disable writes** — NOPs code paths that turn SFE off based on encoder settings
+- **Resolution gate** -removes the 4K minimum (`width * height >= 0x7E9000`) check
+- **Heuristic bypass** -removes the check that decides SFE "isn't needed"
+- **Device whitelist bypass** -forces the SFE enable flag on all devices
+- **SFE disable writes** -NOPs code paths that turn SFE off based on encoder settings
 
 ## Three tools
 
-### `amf-sfe-patch-dynamic.exe` — Dynamic patcher (recommended)
+### `amf-sfe-patch-dynamic.exe` -Dynamic patcher (recommended)
 
 Works across driver versions by analyzing the DLL structure at runtime instead of relying on hardcoded byte patterns. Parses the PE, finds the SFE setup function via string references, discovers struct offsets dynamically, then patches.
 
@@ -29,7 +72,7 @@ amf-sfe-patch-dynamic.exe --patch -o out.dll   # patch to a new file
 
 Run `--analyze` first to see what it finds before committing to a patch.
 
-### `amf-sfe-patch.exe` — Static file patcher
+### `amf-sfe-patch.exe` -Static file patcher
 
 Uses exact byte patterns for known driver versions. Faster and simpler, but only works on tested drivers.
 
@@ -39,7 +82,7 @@ amf-sfe-patch.exe --replace             # patch in-place (creates .bak backup)
 amf-sfe-patch.exe --patch -o out.dll    # patch to a new file
 ```
 
-### `amf-sfe-launch.exe` — Runtime memory patcher
+### `amf-sfe-launch.exe` -Runtime memory patcher
 
 Patches a running process's memory without touching the DLL on disk. Uses the same static patterns as `amf-sfe-patch.exe`.
 
@@ -54,7 +97,7 @@ amf-sfe-launch.exe "C:\path\to\app.exe"   # launch and patch
 1. Download `amf-sfe-patch-dynamic.exe` from [Releases](../../releases)
 2. Open an admin Command Prompt
 3. Run: `amf-sfe-patch-dynamic.exe --analyze`
-4. Check the output — it should find your DLL and list all patch sites
+4. Check the output -it should find your DLL and list all patch sites
 5. If it looks good: `amf-sfe-patch-dynamic.exe --replace`
 6. Restart your streaming server (Sunshine/Apollo/Vibepollo)
 
@@ -62,33 +105,16 @@ To revert: restore the `.bak` file or reinstall your AMD drivers.
 
 ## Compatibility
 
-- **Requires:** AMD GPU with dual VCN hardware (e.g., Radeon RX 7000 series, Radeon 8060S / Strix Halo)
 - **Tested on:** Radeon 8060S (Strix Halo, device ID 0x1586) at 1440p
-
-### Codec results
-
-| Codec | HDR | Result |
-|-------|-----|--------|
-| AV1 | Yes | **Works perfectly** — no artifacts, good quality |
-| HEVC | No (SDR) | **Works well** — clean image |
-| HEVC | Yes | **Broken** — fuzzy artifacts at any bitrate, inherent to AMD's HEVC SFE with 10-bit |
-
-### Important: your mileage will vary
-
-**Strix Halo is currently the only AMD chip with dual AV1 encoders.** Other dual-VCN GPUs (RX 7900 XT/XTX, etc.) have dual HEVC encoders but only a single AV1 encoder. This means:
-
-- **Strix Halo:** Use AV1 + HDR with SFE. Best experience.
-- **Everything else (RX 7000 series, etc.):** SFE is limited to HEVC, which means **SDR only** — HEVC + HDR produces artifacts with split frame encoding. Still a latency win, but no HDR.
-
-If you're not on Strix Halo, set your streaming client to HEVC + SDR before enabling SFE.
+- See [Supported hardware](#supported-hardware) above for the full GPU compatibility table
 
 ## Driver version support
 
-**Dynamic patcher** (`amf-sfe-patch-dynamic.exe`): Should work on any driver version as long as AMD keeps the `HevcMultiHwInstanceEncode` string and the same general function structure. It discovers all offsets at runtime — no hardcoded patterns.
+**Dynamic patcher** (`amf-sfe-patch-dynamic.exe`): Should work on any driver version as long as AMD keeps the `HevcMultiHwInstanceEncode` string and the same general function structure. It discovers all offsets at runtime -no hardcoded patterns.
 
 **Static patcher** (`amf-sfe-patch.exe` / `amf-sfe-launch.exe`): Confirmed for:
-- **Adrenalin 25.3.1** (latest as of April 2026) — `u0198975` driver package
-- **Older driver** — `u0420529` driver package
+- **Adrenalin 25.3.1** (latest as of April 2026) -`u0198975` driver package
+- **Older driver** -`u0420529` driver package
 
 If neither tool works on your driver, run `amf-sfe-patch-dynamic.exe --analyze` and [open an issue](../../issues) with the full output and your driver version.
 
@@ -96,17 +122,17 @@ If neither tool works on your driver, run `amf-sfe-patch-dynamic.exe --analyze` 
 
 Instead of hardcoded byte patterns that break across driver updates, the dynamic patcher uses structural analysis:
 
-1. **Parse PE** — reads the DLL's section headers to find `.text` (code) and data sections
-2. **Find anchor string** — locates the `"HevcMultiHwInstanceEncode"` UTF-16 wide string in the data section
-3. **Follow cross-references** — scans `.text` for `LEA` instructions that reference the string's RVA, giving us the SFE setup function
-4. **Discover struct offsets** — within the setup function, finds `MOV byte [reg+offset], 1` instructions to discover the SFE flag offset (e.g., `0xC2C` in current drivers), and conditional writes to find the whitelist flag offset (e.g., `0x602`)
-5. **Patch by structure** — uses the discovered offsets to find and NOP:
+1. **Parse PE** -reads the DLL's section headers to find `.text` (code) and data sections
+2. **Find anchor string** -locates the `"HevcMultiHwInstanceEncode"` UTF-16 wide string in the data section
+3. **Follow cross-references** -scans `.text` for `LEA` instructions that reference the string's RVA, giving us the SFE setup function
+4. **Discover struct offsets** -within the setup function, finds `MOV byte [reg+offset], 1` instructions to discover the SFE flag offset (e.g., `0xC2C` in current drivers), and conditional writes to find the whitelist flag offset (e.g., `0x602`)
+5. **Patch by structure** -uses the discovered offsets to find and NOP:
    - Resolution gate: `CMP EAX, 0x7E9000` (4K pixel count constant)
    - Heuristic check: `CMP byte [reg+heuristic_offset], 0 / JZ` with large jump displacement
    - Whitelist conditional: `JNZ`/`JZ` before `MOV byte [reg+whitelist_offset]`
    - SFE disable writes: all `MOV byte [reg+sfe_offset], 0` across the entire `.text` section
 
-This approach is resilient to changes in register allocation, struct layout, and instruction ordering — as long as the logical structure of AMD's encoder init code remains the same.
+This approach is resilient to changes in register allocation, struct layout, and instruction ordering -as long as the logical structure of AMD's encoder init code remains the same.
 
 ## Building
 
