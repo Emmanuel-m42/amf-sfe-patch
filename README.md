@@ -16,7 +16,7 @@ NVIDIA opened up this capability in SDK 12.1 back in 2023. If you have an AMD GP
 
 ## Supported hardware
 
-Split frame encoding requires **two VCN instances**. Not all AMD GPUs have this. Many recent GPUs, including all of RDNA 4, only have one.
+Split frame encoding requires **two VCN instances**. Not all AMD GPUs have this.
 
 ### Dual VCN GPUs (SFE works)
 
@@ -26,12 +26,12 @@ Split frame encoding requires **two VCN instances**. Not all AMD GPUs have this.
 | **RX 7900 XTX / 7900 XT / 7900 GRE** | Navi 31 | 4.0 x2 | Yes | No (only 1 AV1 encoder) | HEVC SFE only. Use SDR (HEVC + HDR has artifacts). |
 | **RX 7800 XT / 7700 XT** | Navi 32 | 4.0 x2 | Yes | No (only 1 AV1 encoder) | HEVC SFE only. Use SDR. |
 | **RX 6900 XT / 6800 XT / 6800** | Navi 21 | 3.0 x2 | Yes | No AV1 encode | HEVC SFE only. No AV1 at all on VCN 3.0. |
+| **RX 9070 XT / 9070** | Navi 48 | 5.0 x2 | Yes | **Yes** | Dual VCN 5.0. HEVC and AV1 SFE. |
 
 ### Single VCN GPUs (SFE not possible)
 
 | GPU | Chip | VCN | Why not |
 |-----|------|-----|---------|
-| **RX 9070 XT / 9070** | Navi 48 | 5.0 x1 | RDNA 4 has only 1 VCN instance |
 | **RX 7600 XT / 7600** | Navi 33 | 4.0 x1 | Single VCN |
 | **RX 6700 XT / 6750 XT** | Navi 22 | 3.0 x1 | Single VCN |
 | **RX 6600 XT / 6600** | Navi 23 | 3.0 x1 | Single VCN |
@@ -48,6 +48,9 @@ Split frame encoding requires **two VCN instances**. Not all AMD GPUs have this.
 | Navi 31/32 (RX 7000) | HEVC | No (SDR) | Good. Only SFE option for these GPUs |
 | Navi 31/32 (RX 7000) | HEVC | Yes | **Broken.** Artifacts at any bitrate |
 | Navi 21 (RX 6000) | HEVC | No (SDR) | Good. Only SFE option for these GPUs |
+| Navi 48 (RX 9070) | AV1 | Yes | **Best.** Dual VCN 5.0, same as Strix Halo |
+| Navi 48 (RX 9070) | HEVC | No (SDR) | Good. Clean image |
+| Navi 48 (RX 9070) | HEVC | Yes | **Broken.** Artifacts at any bitrate |
 
 ## What this does
 
