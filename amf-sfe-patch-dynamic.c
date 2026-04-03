@@ -584,6 +584,8 @@ static int find_and_patch_heuristic(uint8_t *func, size_t func_size,
         if (offset < 0x800) continue;
         /* Filter: skip if this is the SFE offset itself */
         if (offsets->have_sfe && offset == offsets->sfe_offset) continue;
+        /* Filter: skip if this matches the whitelist offset — let whitelist bypass handle it */
+        if (offsets->have_whitelist && offset == offsets->whitelist_offset) continue;
         /* Filter: JZ displacement should be significant (major branch) */
         if (jz_disp < 0x20) continue;
 
@@ -823,6 +825,23 @@ static int find_and_patch_sfe_disables(uint8_t *text, size_t text_size,
     return found;
 }
 
+/* ── Admin check (Windows) ────────────────────────────────────────── */
+
+#ifdef _WIN32
+static int is_elevated(void) {
+    BOOL elevated = FALSE;
+    HANDLE token = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION elev;
+        DWORD size;
+        if (GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &size))
+            elevated = elev.TokenIsElevated;
+        CloseHandle(token);
+    }
+    return elevated;
+}
+#endif
+
 /* ── Main ────────────────────────────────────────────────────────────── */
 
 static void usage(const char *argv0) {
@@ -856,6 +875,14 @@ int main(int argc, char **argv) {
     if (mode == MODE_PATCH && !output_path) {
         fprintf(stderr, "Error: --patch requires -o <output_path>\n"); return 1;
     }
+
+#ifdef _WIN32
+    if (mode == MODE_REPLACE && !is_elevated()) {
+        fprintf(stderr, "Error: --replace requires Administrator privileges.\n");
+        fprintf(stderr, "Right-click Command Prompt or PowerShell and select \"Run as administrator\".\n");
+        return 1;
+    }
+#endif
 
     if (!dll_path) {
 #ifdef _WIN32
@@ -988,6 +1015,8 @@ int main(int argc, char **argv) {
         int h = find_and_patch_heuristic(func_data, func_size, func_start,
                                          &offsets, apply, &total_patched);
         if (h > 0) any_found = 1;
+        else if (offsets.have_whitelist && offsets.whitelist_offset >= 0x800)
+            printf("  Merged with whitelist check (same offset 0x%X)\n", offsets.whitelist_offset);
         else printf("  NOT FOUND\n");
     }
     printf("\n");

@@ -507,6 +507,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+#ifdef _WIN32
+    if (mode == MODE_REPLACE && !is_elevated()) {
+        fprintf(stderr, "Error: --replace requires Administrator privileges.\n");
+        fprintf(stderr, "Right-click Command Prompt or PowerShell and select \"Run as administrator\".\n");
+        return 1;
+    }
+#endif
+
     /* Auto-find DLL if path not given */
     if (!dll_path) {
 #ifdef _WIN32
